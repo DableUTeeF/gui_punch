@@ -1,11 +1,7 @@
 import os
 import sys
 
-import your
-
 import numpy as np
-
-from astropy import units as u
 
 import matplotlib
 
@@ -30,10 +26,9 @@ matplotlib.rcParams.update({'font.size': 5})
 
 class PlotCanvas(FigCanvas):
 
-    def __init__(self, title, index, data, dd_data):
+    def __init__(self, title, index, data):
 
         self.data = data
-        self.dd_data = dd_data
 
         self.fig = Figure(figsize=(5, 7), dpi=300)
 
@@ -43,10 +38,10 @@ class PlotCanvas(FigCanvas):
         FigCanvas.updateGeometry(self)
 
         widths = [8, 4]
-        heights = [4, 8, 8]
+        heights = [4, 16]
         spec5 = self.fig.add_gridspec(
             ncols=2,
-            nrows=3,
+            nrows=2,
             width_ratios=widths,
             height_ratios=heights
         )
@@ -56,26 +51,21 @@ class PlotCanvas(FigCanvas):
             "{0}\nsubint {1}".format(title, index)
             )
 
-        chart = np.sum(self.dd_data, axis=0)
+        chart = np.sum(self.data.T, axis=0)
 
         ax.plot(chart / np.max(chart), color='black', lw=0.5)
-        ax.set_xlim(0, len(self.dd_data[0]))
+        ax.set_xlim(0, len(self.data.T[0]))
         ax.get_xaxis().set_visible(False)
         ax.set_ylabel('Normalized intensity')
 
         ax = self.fig.add_subplot(spec5[1, 0])
-        ax.imshow(self.dd_data, aspect='auto')
-        ax.get_xaxis().set_visible(False)
-        ax.set_ylabel('Frequency channels')
-
-        ax = self.fig.add_subplot(spec5[2, 0])
         ax.imshow(self.data.T, aspect='auto')
         ax.set_xlabel('Time samples')
         ax.set_ylabel('Frequency channels')
 
         ax = self.fig.add_subplot(spec5[1, 1])
 
-        pow_by_chnl = np.sum(np.transpose(self.dd_data), axis=0)[::-1]
+        pow_by_chnl = np.sum(np.transpose(self.data.T), axis=0)[::-1]
 
         ax.plot(
             pow_by_chnl / np.max(pow_by_chnl),
@@ -131,7 +121,7 @@ class App(QMainWindow):
         self.title = 'Labeling data'
         self.left = 20
         self.top = 30
-
+        self.window = 256
         #  Deafault values for header
         self.n_param_lines = 11
         self.n_spectra = None
@@ -270,6 +260,7 @@ class App(QMainWindow):
         self.to_None.setEnabled(False)
         self.to_pulse_and_broad.setEnabled(False)
         self.to_pulse_and_narrow.setEnabled(False)
+        self.to_unknown.setEnabled(False)
         self.stop.setEnabled(False)
         self.spinBox.setEnabled(False)
         self.goto_button.setEnabled(False)
@@ -284,7 +275,6 @@ class App(QMainWindow):
             'TEST',
             0,
             np.random.rand(256, 256),
-            np.random.rand(256, 256)
         )
 
         self.layout_plot = QGridLayout()
@@ -388,21 +378,15 @@ class App(QMainWindow):
         options = QFileDialog.Options()
         options |= QFileDialog.DontUseNativeDialog
 
-        self.fil_file, _ = QFileDialog.getOpenFileName(
+        self.directory = QFileDialog.getExistingDirectory(
                     self, 'Choose file',
-                    '', 'Filterbank file (*.fil)',
                     options=options)
-        if self.fil_file:
-
-            # loading data
-
-            self.DM = float(self.dm_value.text())
-            self.window = int(self.window_value.text())
-
-            self.object = self.load_data(self.fil_file)
+        if self.directory:
             self.get_header_info()
-
-            self.steps = range(0, self.n_spectra, self.window)
+            self.files = os.listdir(self.directory)
+            self.files.pop(self.files.index('header.npy'))
+            self.files = sorted(self.files)
+            self.steps = range(len(self.files))
             self.spinBox.setRange(0, len(self.steps))
 
             self.labels = self.get_labels()
@@ -413,13 +397,6 @@ class App(QMainWindow):
             f_lo = self.f_low / 1000
 
             self.freq_list = np.linspace(f_lo, f_hi, self.n_channels)
-            delays_list = self.delays_DM_list(self.freq_list, self.DM)
-            tsamp = tsamp = self.t_sample * u.second
-
-            self.delays_list_point = [
-                int(round(i, 0))
-                for i in (delays_list / tsamp.to(u.millisecond)).value
-            ]
 
             self.mask = self.get_mask()
 
@@ -465,23 +442,17 @@ class App(QMainWindow):
 
     def replot_next(self):
         step = self.steps[self.data_index]
-        self.data = self.object.get_data(nstart=step, nsamp=self.window)
+        self.data = np.load(os.path.join(self.directory, self.files[self.data_index]))
 
         if self.use_mask.isChecked():
             self.data = self.data * self.mask
         else:
             pass
 
-        self.dd_data = self.dedispersion(
-            self.data.T,
-            self.delays_list_point[::-1]
-        )
-
         self.plotter = PlotCanvas(
-            os.path.basename(self.fil_file),
+            os.path.basename(self.directory),
             self.data_index,
             self.data,
-            self.dd_data
         )
 
         self.layout_plot.addWidget(self.plotter, 0, 0, 1, 1)
@@ -599,13 +570,13 @@ class App(QMainWindow):
     """
 
     def get_header_info(self):
+        header = np.load(os.path.join(self.directory, 'header.npy'), allow_pickle=True).tolist()
+        self.n_spectra = header['n_spectra']
+        self.n_channels = header['n_channels']
+        self.t_sample = header['t_sample']
 
-        self.n_spectra = self.object.your_header.nspectra
-        self.n_channels = self.object.your_header.nchans
-        self.t_sample = self.object.your_header.tsamp
-
-        fch1 = self.object.your_header.fch1
-        bw = self.object.your_header.bw
+        fch1 = header['fch1']
+        bw = header['bw']
 
         temp_f = fch1 + bw
 
@@ -621,7 +592,7 @@ class App(QMainWindow):
         if not os.path.isdir(labeling_log):
             os.mkdir('labeling_log')
 
-        name_part = os.path.basename(self.fil_file)[:-4]
+        name_part = os.path.basename(self.directory)[:-4]
         end_of_name = '_{0}_{1}.logcsv'.format(
             self.name_value.text(),
             self.window
@@ -666,11 +637,6 @@ class App(QMainWindow):
             dt_list.append(round(t1 - t2, 1))
 
         return dt_list
-
-    def load_data(self, filename):
-        my_object = your.Your(filename)
-
-        return my_object
 
     def dedispersion(self, array, delays_list):
         new_array = []
